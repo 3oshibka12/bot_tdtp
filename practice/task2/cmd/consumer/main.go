@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"benchmark/internal/broker"
@@ -13,8 +15,10 @@ import (
 )
 
 func main() {
-	brokerType := flag.String("broker", "rabbitmq", "Broker type: rabbitmq or redis")
+	brokerType := flag.String("broker", "rabbitmq", "Broker type")
 	duration := flag.Duration("duration", 30*time.Second, "Test duration")
+	queueName := flag.String("queue", "benchmark_queue", "Queue name")
+	outputFile := flag.String("output", "", "Output JSON file")
 	flag.Parse()
 
 	cfg := config.Default()
@@ -24,9 +28,9 @@ func main() {
 	var err error
 
 	if *brokerType == "rabbitmq" {
-		b, err = broker.NewRabbitMQ(cfg.RabbitMQURL, cfg.QueueName)
+		b, err = broker.NewRabbitMQ(cfg.RabbitMQURL, *queueName)
 	} else {
-		b, err = broker.NewRedis(cfg.RedisAddr, cfg.QueueName)
+		b, err = broker.NewRedis(cfg.RedisAddr, *queueName)
 	}
 
 	if err != nil {
@@ -34,7 +38,9 @@ func main() {
 	}
 	defer b.Close()
 
-	log.Printf("🔄 Starting consumer: broker=%s, duration=%s", b.Name(), *duration)
+	if *outputFile == "" {
+		log.Printf("🔄 Consumer: broker=%s, duration=%s", b.Name(), *duration)
+	}
 
 	m := metrics.New()
 	ctx, cancel := context.WithTimeout(context.Background(), *duration)
@@ -47,7 +53,12 @@ func main() {
 		case <-ctx.Done():
 			m.Finalize()
 			stats := m.GetStats()
-			printStats(stats, b.Name())
+
+			if *outputFile != "" {
+				saveStats(*outputFile, stats)
+			} else {
+				printStats(stats, b.Name())
+			}
 			return
 
 		case msg, ok := <-msgChan:
@@ -60,10 +71,14 @@ func main() {
 		case err := <-errChan:
 			if err != nil {
 				m.IncrementErrors()
-				log.Printf("Consume error: %v", err)
 			}
 		}
 	}
+}
+
+func saveStats(filename string, s metrics.Stats) {
+	data, _ := json.MarshalIndent(s, "", "  ")
+	os.WriteFile(filename, data, 0644)
 }
 
 func printStats(s metrics.Stats, brokerName string) {
@@ -73,7 +88,7 @@ func printStats(s metrics.Stats, brokerName string) {
 	fmt.Printf("Errors:       %d\n", s.Errors)
 	fmt.Printf("Duration:     %s\n", s.Duration)
 	fmt.Printf("Throughput:   %.2f msg/sec\n", s.Throughput())
-	fmt.Printf("Avg latency:  %s\n", s.AvgLatency)
-	fmt.Printf("P95 latency:  %s\n", s.P95Latency)
-	fmt.Printf("Max latency:  %s\n", s.MaxLatency)
+	fmt.Printf("Avg latency:  %.2f ms\n", s.AvgLatencyMs)
+	fmt.Printf("P95 latency:  %.2f ms\n", s.P95LatencyMs)
+	fmt.Printf("Max latency:  %.2f ms\n", s.MaxLatencyMs)
 }

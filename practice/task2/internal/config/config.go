@@ -3,12 +3,12 @@ package config
 import "time"
 
 type Config struct {
-	BrokerType      string        // "rabbitmq" или "redis"
+	BrokerType      string      
 	RabbitMQURL     string
 	RedisAddr       string
 	QueueName       string
-	MessageSizes    []int         // размеры сообщений в байтах
-	Rates           []int         // сообщений в секунду
+	MessageSizes    []int         
+	Rates           []int
 	TestDuration    time.Duration
 	NumProducers    int
 	NumConsumers    int

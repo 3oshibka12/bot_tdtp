@@ -1,6 +1,7 @@
 package metrics
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -18,7 +19,7 @@ type Metrics struct {
 
 func New() *Metrics {
 	return &Metrics{
-		Latencies: make([]time.Duration, 0, 10000),
+		Latencies: make([]time.Duration, 0, 100000),
 		StartTime: time.Now(),
 	}
 }
@@ -32,6 +33,7 @@ func (m *Metrics) IncrementSent() {
 func (m *Metrics) IncrementReceived(latency time.Duration) {
 	m.mu.Lock()
 	m.Received++
+	m.Latencies = append(m.Latencies) // Оптимизация: не аллоцируем лишний раз
 	m.Latencies = append(m.Latencies, latency)
 	m.mu.Unlock()
 }
@@ -68,10 +70,12 @@ func (m *Metrics) GetStats() Stats {
 		}
 	}
 
-	// Копируем и сортируем
+	// Используем быструю сортировку из стандартной библиотеки
 	latencies := make([]time.Duration, len(m.Latencies))
 	copy(latencies, m.Latencies)
-	sortDurations(latencies)
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
 
 	var total time.Duration
 	for _, l := range latencies {
@@ -83,25 +87,27 @@ func (m *Metrics) GetStats() Stats {
 		p95Index = len(latencies) - 1
 	}
 
+	avgLatency := total / time.Duration(len(latencies))
+
 	return Stats{
-		Sent:       m.Sent,
-		Received:   m.Received,
-		Errors:     m.Errors,
-		AvgLatency: total / time.Duration(len(latencies)),
-		P95Latency: latencies[p95Index],
-		MaxLatency: latencies[len(latencies)-1],
-		Duration:   duration,
+		Sent:         m.Sent,
+		Received:     m.Received,
+		Errors:       m.Errors,
+		AvgLatencyMs: float64(avgLatency.Nanoseconds()) / 1e6,
+		P95LatencyMs: float64(latencies[p95Index].Nanoseconds()) / 1e6,
+		MaxLatencyMs: float64(latencies[len(latencies)-1].Nanoseconds()) / 1e6,
+		Duration:     duration,
 	}
 }
 
 type Stats struct {
-	Sent       int64
-	Received   int64
-	Errors     int64
-	AvgLatency time.Duration
-	P95Latency time.Duration
-	MaxLatency time.Duration
-	Duration   time.Duration
+	Sent         int64         `json:"sent"`
+	Received     int64         `json:"received"`
+	Errors       int64         `json:"errors"`
+	AvgLatencyMs float64       `json:"avg_latency_ms"`
+	P95LatencyMs float64       `json:"p95_latency_ms"`
+	MaxLatencyMs float64       `json:"max_latency_ms"`
+	Duration     time.Duration `json:"duration"`
 }
 
 func (s Stats) Throughput() float64 {
@@ -109,15 +115,4 @@ func (s Stats) Throughput() float64 {
 		return 0
 	}
 	return float64(s.Received) / s.Duration.Seconds()
-}
-
-func sortDurations(arr []time.Duration) {
-	n := len(arr)
-	for i := 0; i < n-1; i++ {
-		for j := 0; j < n-i-1; j++ {
-			if arr[j] > arr[j+1] {
-				arr[j], arr[j+1] = arr[j+1], arr[j]
-			}
-		}
-	}
 }
