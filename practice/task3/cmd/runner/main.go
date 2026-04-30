@@ -13,14 +13,12 @@ import (
 
 func main() {
 	pg, err := db.NewPostgres("postgres://user:password@localhost:5433/testdb?sslmode=disable")
-	if err != nil {
-		panic(err)
-	}
+	if err != nil { panic(err) }
 	rd := cache.NewRedis("localhost:6379")
 
-	fmt.Println("Seeding database (100 keys)...")
+	fmt.Println("Seeding database...")
 	for i := 0; i < 100; i++ {
-		pg.Set(fmt.Sprintf("key-%d", i), "initial_value")
+		pg.Set(fmt.Sprintf("key-%d", i), "init")
 	}
 
 	strategies := []strategy.Strategy{
@@ -33,13 +31,14 @@ func main() {
 		name  string
 		readP int
 	}{
-		{"Read-Heavy (80/20)", 80},
-		{"Balanced (50/50)", 50},
-		{"Write-Heavy (20/80)", 20},
+		{"Read-Heavy", 80},
+		{"Balanced", 50},
+		{"Write-Heavy", 20},
 	}
 
-	fmt.Printf("%-15s | %-20s | %-8s | %-10s | %-8s | %-8s\n", "Strategy", "Scenario", "T-put", "Avg Lat", "DB Calls", "Hit Rate")
-	fmt.Println("------------------------------------------------------------------------------------------")
+	fmt.Printf("%-15s | %-12s | %-8s | %-10s | %-7s | %-7s | %-8s\n", 
+		"Strategy", "Scenario", "T-put", "Avg Lat", "DB Rd", "DB Wr", "HitRate")
+	fmt.Println("---------------------------------------------------------------------------------------------")
 
 	for _, st := range strategies {
 		for _, sc := range scenarios {
@@ -57,7 +56,7 @@ func main() {
 				if rand.Intn(100) < sc.readP {
 					st.Get(context.Background(), key)
 				} else {
-					st.Set(context.Background(), key, "updated_value")
+					st.Set(context.Background(), key, "val")
 				}
 				totalLat += time.Since(opStart)
 			}
@@ -71,16 +70,15 @@ func main() {
 			miss := atomic.LoadInt64(&rd.Misses)
 			
 			hitRate := 0.0
-			if (hits + miss) > 0 {
-				hitRate = float64(hits) / float64(hits+miss) * 100
-			}
+			if (hits + miss) > 0 { hitRate = float64(hits) / float64(hits+miss) * 100 }
 
-			throughput := float64(count) / dur.Seconds()
-			avgLatency := totalLat / time.Duration(count)
-			dbCalls := atomic.LoadInt64(&pg.Calls)
+			tPut := float64(count) / dur.Seconds()
+			avgLat := totalLat / time.Duration(count)
+			dbRd := atomic.LoadInt64(&pg.ReadCalls)
+			dbWr := atomic.LoadInt64(&pg.WriteCalls)
 
-			fmt.Printf("%-15s | %-20s | %-8.1f | %-10v | %-8d | %-8.1f%%\n",
-				st.Name(), sc.name, throughput, avgLatency, dbCalls, hitRate)
+			fmt.Printf("%-15s | %-12s | %-8.1f | %-10v | %-7d | %-7d | %-8.1f%%\n",
+				st.Name(), sc.name, tPut, avgLat, dbRd, dbWr, hitRate)
 			
 			time.Sleep(500 * time.Millisecond)
 		}
