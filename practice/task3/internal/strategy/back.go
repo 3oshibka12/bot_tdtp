@@ -37,11 +37,13 @@ func (s *WriteBack) Set(ctx context.Context, key, val string) error {
 
 func (s *WriteBack) worker() {
 	for {
-		time.Sleep(2 * time.Second)
+		time.Sleep(500 * time.Millisecond) 
 		s.mu.Lock()
-		for k, v := range s.queue {
-			s.DB.Set(k, v)
-			delete(s.queue, k)
+		if len(s.queue) > 0 {
+			for k, v := range s.queue {
+				s.DB.Set(k, v)
+				delete(s.queue, k)
+			}
 		}
 		s.mu.Unlock()
 	}

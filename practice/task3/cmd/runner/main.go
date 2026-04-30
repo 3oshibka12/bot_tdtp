@@ -12,30 +12,15 @@ import (
 )
 
 func main() {
-	// 1. Подключаемся и ЖДЕМ базу
-	var pg *db.Postgres
-	var err error
-	for i := 0; i < 10; i++ {
-		pg, err = db.NewPostgres("postgres://user:password@localhost:5433/testdb?sslmode=disable")
-		if err == nil {
-			err = pg.DB.Ping()
-		}
-		if err == nil {
-			break
-		}
-		fmt.Println("Waiting for Postgres...")
-		time.Sleep(2 * time.Second)
-	}
+	pg, err := db.NewPostgres("postgres://user:password@localhost:5433/testdb?sslmode=disable")
 	if err != nil {
-		panic("Could not connect to Postgres")
+		panic(err)
 	}
-
 	rd := cache.NewRedis("localhost:6379")
 
-	// 2. ЗАПОЛНЯЕМ БАЗУ (Seeding)
-	fmt.Println("Seeding data...")
-	for i := 0; i < 20; i++ {
-		pg.Set(fmt.Sprintf("key-%d", i), "value")
+	fmt.Println("Seeding database (100 keys)...")
+	for i := 0; i < 100; i++ {
+		pg.Set(fmt.Sprintf("key-%d", i), "initial_value")
 	}
 
 	strategies := []strategy.Strategy{
@@ -61,34 +46,43 @@ func main() {
 			rd.Reset()
 			pg.Reset()
 			
-			count := 100
+			count := 1000
 			start := time.Now()
 			var totalLat time.Duration
 
 			for i := 0; i < count; i++ {
-				key := fmt.Sprintf("key-%d", rand.Intn(20))
+				key := fmt.Sprintf("key-%d", rand.Intn(100))
 				opStart := time.Now()
 				
 				if rand.Intn(100) < sc.readP {
 					st.Get(context.Background(), key)
 				} else {
-					st.Set(context.Background(), key, "new_val")
+					st.Set(context.Background(), key, "updated_value")
 				}
 				totalLat += time.Since(opStart)
+			}
+
+			if st.Name() == "Write-Back" {
+				time.Sleep(1200 * time.Millisecond)
 			}
 
 			dur := time.Since(start)
 			hits := atomic.LoadInt64(&rd.Hits)
 			miss := atomic.LoadInt64(&rd.Misses)
+			
 			hitRate := 0.0
 			if (hits + miss) > 0 {
 				hitRate = float64(hits) / float64(hits+miss) * 100
 			}
 
+			throughput := float64(count) / dur.Seconds()
+			avgLatency := totalLat / time.Duration(count)
+			dbCalls := atomic.LoadInt64(&pg.Calls)
+
 			fmt.Printf("%-15s | %-20s | %-8.1f | %-10v | %-8d | %-8.1f%%\n",
-				st.Name(), sc.name, float64(count)/dur.Seconds(), totalLat/time.Duration(count), atomic.LoadInt64(&pg.Calls), hitRate)
+				st.Name(), sc.name, throughput, avgLatency, dbCalls, hitRate)
 			
-			time.Sleep(3 * time.Second)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
