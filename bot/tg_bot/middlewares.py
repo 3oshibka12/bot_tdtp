@@ -1,16 +1,20 @@
 import time
-import logging
 from aiogram import BaseMiddleware
 from aiogram.types import TelegramObject
+from prometheus_client import Histogram, Counter
+
+# Создаем метрики Прометеуса
+REQUEST_TIME = Histogram('bot_request_processing_seconds', 'Time spent processing request')
+REQUEST_COUNT = Counter('bot_requests_total', 'Total bot requests')
 
 class MetricsMiddleware(BaseMiddleware):
     async def __call__(self, handler, event: TelegramObject, data: dict):
-        start_time = time.perf_counter() # Засекаем время
+        REQUEST_COUNT.inc() # Увеличиваем счетчик запросов
         
-        result = await handler(event, data) # Пропускаем запрос дальше
+        start_time = time.perf_counter()
+        result = await handler(event, data)
+        duration = time.perf_counter() - start_time
         
-        duration = (time.perf_counter() - start_time) * 1000 # В миллисекундах
-        user_id = data.get("event_from_user").id if data.get("event_from_user") else "Unknown"
+        REQUEST_TIME.observe(duration) # Записываем время выполнения
         
-        logging.info(f"📊 [МЕТРИКА] Запрос пользователя {user_id} обработан за {duration:.2f} мс")
         return result

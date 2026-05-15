@@ -8,7 +8,7 @@ from tg_bot.middlewares import MetricsMiddleware
 from db.database import init_db
 from tg_bot.handlers import router
 from aiogram.client.default import DefaultBotProperties
-
+from prometheus_client import start_http_server
 
 BOT_TOKEN = "8602804233:AAFAL5k937tZNe3tYI58zC89uSBp4dOGf4A"
 REDIS_URL = "redis://redis:6379/0"
@@ -18,6 +18,9 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 async def main():
     print("⏳ Жду 5 секунд, пока поднимется база данных...")
     await asyncio.sleep(5)
+
+    start_http_server(8000)
+
     
     await init_db()
     
