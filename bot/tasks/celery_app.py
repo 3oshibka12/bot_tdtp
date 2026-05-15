@@ -4,13 +4,13 @@ import asyncio
 from db.database import async_session
 from services.raitings import recalculate_all_ratings
 
-app = Celery('dating_tasks', broker='redis://localhost:6379/0')
+app = Celery('dating_tasks', broker='amqp://guest:guest@rabbitmq:5672//')
 
 # Настройка расписания
 app.conf.beat_schedule = {
     'recalculate-every-hour': {
         'task': 'tasks.celery_app.recalculate_ratings',
-        'schedule': crontab(minute='*'), # Раз в час
+        'schedule': crontab(minute='*'),
     },
 }
 

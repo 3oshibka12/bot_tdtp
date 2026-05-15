@@ -28,7 +28,7 @@ async def recalculate_user_rating(session: AsyncSession, user_id: int):
     # Уровень 3: Итоговый (Комбинированный)
     final_rating = (l1_score * 0.3) + (l2_score * 0.6) + (5.0 * 0.1) + referral_bonus
     
-    user.rating = round(final_rating, 2)
+    user.rating = round(min(final_rating, 10.0), 2)
     await session.commit()
 
 async def recalculate_all_ratings(session: AsyncSession):

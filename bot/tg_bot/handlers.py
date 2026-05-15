@@ -1,14 +1,17 @@
 from aiogram import Router, F, Bot
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, BufferedInputFile
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from redis.asyncio import Redis
-from tg_bot.keyboards import get_gender_kb, get_menu_kb, get_profile_actions_kb
+from tg_bot.keyboards import get_gender_kb, get_menu_kb, get_profile_actions_kb, get_empty_feed_kb
 
 from db.database import async_session
 import services.crud
 import services.cache
+
+import io
+from services.s3_service import upload_photo_to_s3, get_photo_from_s3
 
 # Создаем роутер
 router = Router()
@@ -20,6 +23,7 @@ class RegState(StatesGroup):
     gender = State()
     city = State()
     bio = State()
+    photo = State()
 
 @router.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
@@ -99,7 +103,30 @@ async def process_city(message: Message, state: FSMContext):
 
 @router.message(RegState.bio)
 async def process_bio(message: Message, state: FSMContext):
-    """Завершение регистрации"""
+    """Шаг ввода 'О себе' -> Переход к фото"""
+    # Сохраняем bio в память состояний (state), а не сразу в базу
+    await state.update_data(bio=message.text)
+    
+    # Просим отправить фотографию
+    await message.answer("📸 Отлично! Теперь отправь свое фото для профиля:")
+    await state.set_state(RegState.photo)
+
+
+@router.message(RegState.photo, F.photo)
+async def process_photo(message: Message, state: FSMContext, bot: Bot):
+    """Завершение регистрации: Загрузка фото в S3 и сохранение в БД"""
+    await message.answer("⏳ Загружаю фото в базу данных, подожди секунду...")
+    
+    # 1. Скачиваем фото из Телеграма
+    photo_file = await bot.get_file(message.photo[-1].file_id)
+    downloaded_file = io.BytesIO()
+    await bot.download_file(photo_file.file_path, downloaded_file)
+    
+    # 2. Грузим фото в наш S3 (Minio)
+    s3_url = upload_photo_to_s3(downloaded_file)
+    print(f"✅ ФОТО УСПЕШНО ЗАГРУЖЕНО В S3: {s3_url}")
+    
+    # 3. Достаем все данные пользователя из памяти
     data = await state.get_data()
     reg_data = {
         'telegram_id': message.from_user.id,
@@ -107,14 +134,19 @@ async def process_bio(message: Message, state: FSMContext):
         'age': data['age'],
         'gender': data['gender'],
         'city': data['city'],
-        'bio': message.text
+        'bio': data['bio'],
+        'photo_url': s3_url,
+        'photo_count': 1
     }
     
+    # 4. Сохраняем всё в базу данных
+   
     async with async_session() as session:
         await services.crud.create_user(session, reg_data)
     
+    # 5. Радуем юзера
     await message.answer(
-        "🎉 Анкета создана!\n\n💡 <i>Совет: добавь фото в профиль для повышения рейтинга</i>", 
+        "🎉 Анкета создана и фото загружено в надежное хранилище S3!", 
         reply_markup=get_menu_kb()
     )
     await state.clear()
@@ -142,7 +174,26 @@ async def show_profile(call: CallbackQuery):
         f"🔥 Мэтчей: {user.match_count}"
     )
     await call.answer()
-    await call.message.edit_text(text, reply_markup=get_menu_kb())
+    if getattr(user, 'photo_url', None):
+        photo_bytes = get_photo_from_s3(user.photo_url)
+        if photo_bytes:
+            # Удаляем старое текстовое сообщение
+            try: await call.message.delete() 
+            except: pass
+            
+            # Отправляем новое сообщение с ФОТО и текстом
+            await call.message.answer_photo(
+                photo=BufferedInputFile(photo_bytes, filename="avatar.jpg"),
+                caption=text,
+                reply_markup=get_menu_kb()
+            )
+            return
+
+    # Если фотки нет, просто меняем текст
+    try:
+        await call.message.edit_text(text, reply_markup=get_menu_kb())
+    except Exception:
+        pass
 
 # --- Поиск анкет ---
 
@@ -166,7 +217,7 @@ async def show_next_profile(message: Message, redis: Redis, bot: Bot):
             
             profiles = await services.crud.get_profiles_for_viewing(session, me, limit=10)
             if not profiles:
-                await message.answer("😔 Анкеты закончились! Загляни позже.")
+                await message.answer("😔 Анкеты закончились! Загляни позже.", reply_markup=get_empty_feed_kb())
                 return
             
             p_ids = [p.telegram_id for p in profiles]
@@ -185,9 +236,24 @@ async def show_next_profile(message: Message, redis: Redis, bot: Bot):
             f"👤 <b>{profile.full_name}</b>, {profile.age}\n"
             f"📍 {profile.city}\n"
             f"⭐️ Рейтинг: {profile.rating}\n\n"
-            f"{profile.bio}"
+            f"💬 {profile.bio}"
         )
-        # Отправляем новую анкету
+        
+        try: await message.delete() 
+        except: pass
+        
+        # Если у анкеты есть фото в S3 — показываем его
+        if getattr(profile, 'photo_url', None):
+            photo_bytes = get_photo_from_s3(profile.photo_url)
+            if photo_bytes:
+                await message.answer_photo(
+                    photo=BufferedInputFile(photo_bytes, filename="photo.jpg"),
+                    caption=text,
+                    reply_markup=get_profile_actions_kb(profile.telegram_id)
+                )
+                return
+        
+        # Если фото нет — выводим просто текст
         await message.answer(text, reply_markup=get_profile_actions_kb(profile.telegram_id))
 # --- Обработка свайпов ---
 
@@ -207,15 +273,25 @@ async def handle_swipe(call: CallbackQuery, redis: Redis, bot: Bot):
             
             await call.answer("🎉 Это мэтч!", show_alert=True)
             
-            # Уведомления обоим пользователям
+            # 1. Отправляем сообщение ТОМУ, КОГО ЛАЙКНУЛИ (Target)
             try:
                 await bot.send_message(
                     target_id, 
-                    f"💖 У вас взаимная симпатия с {initiator.full_name}!\n"
-                    f"Можете начать общение!"
+                    f"💖 <b>МЭТЧ!</b> У вас взаимная симпатия с {initiator.full_name}!\n"
+                    f"Напиши первым: <a href='tg://user?id={initiator.telegram_id}'>Перейти в профиль</a>"
                 )
             except Exception:
-                pass  # Если пользователь заблокировал бота
+                pass 
+                
+            # 2. Отправляем сообщение ТЕБЕ (Initiator)
+            try:
+                await bot.send_message(
+                    initiator_id, 
+                    f"💖 <b>МЭТЧ!</b> У вас взаимная симпатия с {target.full_name}!\n"
+                    f"Скорее пиши: <a href='tg://user?id={target.telegram_id}'>Перейти в профиль</a>"
+                )
+            except Exception:
+                pass
     
     await call.answer()
     await show_next_profile(call.message, redis, bot)
@@ -239,3 +315,43 @@ async def invite_friend_callback(call: CallbackQuery, bot: Bot):
     
     # Отправляем сообщение
     await call.message.answer(text)
+
+@router.callback_query(F.data == "my_matches")
+async def show_matches(call: CallbackQuery):   
+    async with async_session() as session:
+        matches = await services.crud.get_user_matches(session, call.from_user.id)
+    
+    if not matches:
+        await call.answer("У тебя пока нет мэтчей 😔\nБольше лайкай!", show_alert=True)
+        return
+        
+    text = "🔥 <b>Твои мэтчи:</b>\n\n"
+    for i, m in enumerate(matches, 1):
+        # Делаем кликабельное имя, которое ведет в ЛС
+        text += f"{i}. {m.full_name} — <a href='tg://user?id={m.telegram_id}'>Написать</a>\n"
+        
+    await call.answer()
+    
+    # Удаляем старое сообщение с фоткой (если было)
+    try: await call.message.delete()
+    except: pass
+    
+    await call.message.answer(text, reply_markup=get_menu_kb())
+
+
+@router.callback_query(F.data == "reset_feed")
+async def reset_feed_call(call: CallbackQuery, redis: Redis, bot: Bot):   
+    async with async_session() as session:
+        await services.crud.reset_interactions(session, call.from_user.id)
+    
+    # Обязательно очищаем кэш ленты в Редисе, чтобы пошел новый запрос в БД
+    await redis.delete(f"feed:{call.from_user.id}")
+    
+    await call.answer("🔄 Лента сброшена! Ищем анкеты...", show_alert=False)
+    
+    # Удаляем старое сообщение
+    try: await call.message.delete()
+    except: pass
+    
+    # Запускаем поиск заново
+    await show_next_profile(call.message, redis, bot)

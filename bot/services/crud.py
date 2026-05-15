@@ -1,4 +1,4 @@
-from sqlalchemy import select, and_, func
+from sqlalchemy import select, and_, func, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from db.database import User, Interaction
 
@@ -73,3 +73,35 @@ async def record_interaction(session: AsyncSession, initiator_id: int, target_id
     # Сразу обновляем рейтинг цели
     await recalculate_user_rating(session, target_id)
     return is_match
+
+
+async def get_user_matches(session: AsyncSession, user_id: int) -> list[User]:
+    """Получает список пользователей, с которыми у нас взаимный лайк"""
+    # 1. Кого лайкнул я?
+    my_likes_query = select(Interaction.target_id).where(
+        and_(Interaction.initiator_id == user_id, Interaction.action == 'like')
+    )
+    my_likes = (await session.execute(my_likes_query)).scalars().all()
+    if not my_likes: return []
+    
+    # 2. Кто из них лайкнул меня?
+    mutual_likes_query = select(Interaction.initiator_id).where(
+        and_(
+            Interaction.target_id == user_id, 
+            Interaction.initiator_id.in_(my_likes),
+            Interaction.action == 'like'
+        )
+    )
+    mutual_likes = (await session.execute(mutual_likes_query)).scalars().all()
+    if not mutual_likes: return []
+    
+    # 3. Достаем их профили
+    users_query = select(User).where(User.telegram_id.in_(mutual_likes))
+    res = await session.execute(users_query)
+    return list(res.scalars().all())
+
+async def reset_interactions(session: AsyncSession, user_id: int):
+    """Удаляет историю просмотров, чтобы начать ленту сначала"""
+    stmt = delete(Interaction).where(Interaction.initiator_id == user_id)
+    await session.execute(stmt)
+    await session.commit()

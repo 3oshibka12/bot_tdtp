@@ -2,8 +2,7 @@ from sqlalchemy import Column, BigInteger, String, Integer, DateTime, func, Fore
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import declarative_base
 
-# Используем localhost и порт 5433 (который проброшен из Docker)
-DB_URL = "postgresql+asyncpg://dating:dating123@localhost:5433/dating_bot"
+DB_URL = "postgresql+asyncpg://dating:dating123@postgres:5432/dating_bot"
 
 engine = create_async_engine(DB_URL, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
@@ -19,6 +18,7 @@ class User(Base):
     city = Column(String(100))
     bio = Column(String)
     referrals_count = Column(Integer, default=0)
+    photo_url = Column(String) 
     
     # Уровень 1: Первичный рейтинг
     profile_completeness = Column(Float, default=0.0)
